@@ -41,7 +41,7 @@ def generate_logs():
             logger.critical(log)
 
         log_count += 1
-        time.sleep(0.03)  # Pause for 30ms
+        time.sleep(0.01)  # Pause for 10ms
 
 
 def generate_log(fake):
