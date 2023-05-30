@@ -7,6 +7,7 @@ import random
 import json
 from logtail import LogtailHandler
 import logging
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 app = Flask(__name__)
 
@@ -86,7 +87,6 @@ def generate_log(fake):
     log_line = json.dumps(log_data)
     return log_line
 
-
 if __name__ == "__main__":
-    Thread(target=generate_logs).start()
-    app.run(debug=True)
+    app.wsgi_app = ProxyFix(app.wsgi_app)
+    app.run()
