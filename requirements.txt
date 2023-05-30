@@ -11,7 +11,6 @@ gunicorn
 idna==3.4
 itsdangerous==2.1.2
 Jinja2==3.1.2
-logtail==1.0.1
 logtail-python==0.2.5
 MarkupSafe==2.1.2
 msgpack==1.0.5
