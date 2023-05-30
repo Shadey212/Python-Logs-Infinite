@@ -66,7 +66,20 @@ def generate_log(fake):
         'additional_info': {
             'user_id': random.randint(1, 100),
             'referrer': fake.uri(),
-            'response_time': random.uniform(0.1, 10.0)
+            'response_time': round(random.uniform(0.1, 10.0), 2),
+            'bytes_sent': random.randint(100, 10000),
+            'cookies': {
+                'session_id': fake.uuid4(),
+                'visitor_id': fake.uuid4()
+            },
+            'headers': {
+                'Accept-Language': fake.language_code(),
+                'X-Forwarded-For': fake.ipv4(),
+                'Referer': fake.uri(),
+                'User-Agent': fake.user_agent(),
+                'Content-Type': fake.mime_type(),
+                'Authorization': fake.md5(),
+            }
         }
     }
 
