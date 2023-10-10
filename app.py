@@ -13,12 +13,14 @@ app = Flask(__name__)
 running = True  # Start log generation by default
 log_count = 0
 handler = LogtailHandler(source_token=os.getenv('LOGTAIL_SOURCE_TOKEN'))
+handler2 = LogtailHandler(source_token=os.getenv('LOGTAIL_SOURCE_TOKEN_2'))
 
-# Create a logger and configure it to use the LogtailHandler
+# Create a logger and configure it to use both LogtailHandlers
 logger = logging.getLogger(__name__)
 logger.handlers = []
 logger.setLevel(logging.DEBUG)
 logger.addHandler(handler)
+logger.addHandler(handler2)  # Add the second handler
 
 
 def generate_logs():
