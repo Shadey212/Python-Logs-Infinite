@@ -1,2 +1,2 @@
-worker: python app.py
-heroku ps:scale web=0 worker=1
+web: gunicorn app:app --preload
+logs: python app.py
