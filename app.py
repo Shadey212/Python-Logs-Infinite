@@ -2,6 +2,7 @@ import os
 import time
 import random
 import logging
+import uuid
 
 from faker import Faker
 from logtail import LogtailHandler
@@ -17,7 +18,7 @@ if not source_token:
     )
 
 logtail_handler = LogtailHandler(source_token=source_token)
-logger = logging.getLogger("UltraDetailedDataStorage")
+logger = logging.getLogger("UltraDetailedDataStoragePlus")
 logger.setLevel(logging.INFO)
 
 # Remove any default console handlers so we only log to Better Stack
@@ -25,7 +26,7 @@ logger.handlers = []
 logger.addHandler(logtail_handler)
 
 #
-# 2. SCENARIO DATA
+# 2. FAKE DATA SETUP
 #
 fake = Faker()
 
@@ -106,10 +107,7 @@ BOT_CHANCE = 0.03  # 3% chance it's a bot UA vs. real
 
 def pick_user_agent():
     """Pick a user-agent from a small curated pool, with some chance of being a bot."""
-    if random.random() < BOT_CHANCE:
-        return random.choice(BOT_USER_AGENTS)
-    else:
-        return random.choice(REAL_USER_AGENTS)
+    return random.choice(BOT_USER_AGENTS) if random.random() < BOT_CHANCE else random.choice(REAL_USER_AGENTS)
 
 def pick_device_type():
     return random.choice(DEVICE_TYPES)
@@ -118,9 +116,7 @@ def pick_os_version():
     return random.choice(OPERATING_SYSTEMS)
 
 def weighted_choice(events):
-    """
-    Choose an event from EVENTS based on the 'weight' field.
-    """
+    """Choose an event from EVENTS based on the 'weight' field."""
     total_weight = sum(e[2] for e in events)
     r = random.random() * total_weight
     cumulative = 0.0
@@ -128,8 +124,11 @@ def weighted_choice(events):
         cumulative += weight
         if r < cumulative:
             return name, lvl
-    # fallback (should never happen)
+    # fallback
     return ("DATA_WRITE", logging.INFO)
+
+PRIORITIES = ["P0", "P1", "P2", "P3"]
+ALL_TAGS = ["production", "infra", "beta", "urgent", "devops", "high-traffic", "critical"]
 
 def generate_event():
     """
@@ -153,7 +152,21 @@ def generate_event():
     # Possibly generate a random IP for the user or system call
     random_user_ip = fake.ipv4_private()
 
-    # We'll build an extra dict with lots of detail
+    # Generate a request/correlation ID
+    correlation_id = str(uuid.uuid4())
+
+    # Random system stats
+    cpu_usage = random.randint(1, 99)  # 1-99%
+    memory_free_mb = random.randint(100, 32000)  # up to 32GB free
+
+    # Priority and tags
+    priority = random.choice(PRIORITIES)
+    num_tags = random.randint(0, 2)  # 0..2 tags
+    chosen_tags = random.sample(ALL_TAGS, k=num_tags)
+
+    # A "phase" or sub-step
+    phase = random.choice(["init", "processing", "finalizing", "cleanup", "verifying"])
+
     extra = {
         "event": event_name,
         "cluster": node["cluster"],
@@ -168,7 +181,19 @@ def generate_event():
         "os_version": os_version,
         "user_agent": user_agent,
         "caller_ip": random_user_ip,
+        "correlation_id": correlation_id,
+        "cpu_usage_percent": cpu_usage,
+        "memory_free_mb": memory_free_mb,
+        "priority": priority,
+        "tags": chosen_tags,
+        "phase": phase,
     }
+
+    # Possibly define an org or department
+    org_id = random.randint(1, 20)
+    dept = random.choice(["sales", "engineering", "it", "devops", "finance"])
+    extra["org_id"] = org_id
+    extra["department"] = dept
 
     if event_name == "NODE_JOINED":
         message = f"Node {node['id']} joined cluster {node['cluster']} in region {node['region']}"
@@ -213,17 +238,23 @@ def generate_event():
         extra["backup_user"] = user
     elif event_name == "DATA_READ":
         size_mb = random.randint(1, 500)
+        read_latency = random.randint(1, 400)  # up to 400 ms
         message = f"Data read {size_mb}MB from volume {volume['id']} by user {user}"
         extra["read_mb"] = size_mb
         extra["user"] = user
+        extra["latency_ms"] = read_latency
     elif event_name == "DATA_WRITE":
         size_mb = random.randint(1, 2000)
+        write_latency = random.randint(10, 2000)  # up to 2 seconds
         message = f"Data write {size_mb}MB to volume {volume['id']} by user {user}"
         extra["written_mb"] = size_mb
         extra["user"] = user
+        extra["latency_ms"] = write_latency
     elif event_name == "DATA_REPLICATION":
+        throughput = random.uniform(0.1, 10.0)  # MB/s
         message = f"Data replication started on node {node['id']} for volume {volume['id']}"
         extra["replication_initiator"] = user
+        extra["throughput_mb_s"] = round(throughput, 2)
     elif event_name == "DATA_REPLICATION_FAILED":
         message = f"Data replication FAILED on node {node['id']} for volume {volume['id']}"
         extra["error"] = "Simulated replication failure"
@@ -256,7 +287,7 @@ def main():
     Infinite loop generating highly detailed, scenario-based logs,
     all sent to Better Stack's Logtail (no console output).
     """
-    logger.info("Starting Ultra-Detailed Data Storage Simulation...")
+    logger.info("Starting Ultra-Detailed Data Storage Simulation with Extra Metadata...")
 
     while True:
         # 1) Generate the scenario event
