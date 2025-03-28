@@ -27,7 +27,7 @@ if not new_source_token:
 old_handler = LogtailHandler(source_token=old_source_token, host=old_host)
 new_handler = LogtailHandler(source_token=new_source_token, host=new_host)
 
-logger = logging.getLogger("UltraDetailedDataStoragePlus")
+logger = logging.getLogger("DataStoragePlus")
 logger.setLevel(logging.INFO)
 logger.handlers = []
 logger.addHandler(old_handler)
@@ -428,7 +428,7 @@ def generate_event():
     return level, message, extra
 
 def main():
-    logger.info("Starting Ultra-Detailed Data Storage Simulation with Extra Metadata...")
+    logger.info("Data Storage Simulation with Extra Metadata...")
     while True:
         with EVENT_PROCESSING_TIME.time():
             level, message, extra = generate_event()
