@@ -23,4 +23,5 @@ six==1.16.0
 urllib3==2.0.2
 Werkzeug==2.3.4
 prometheus_client
-kubernetes
+psutil==5.9.5
+kubernetes==26.1.0

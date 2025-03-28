@@ -4,31 +4,25 @@ import random
 import logging
 import uuid
 import threading
+import psutil
 
 from faker import Faker
 from logtail import LogtailHandler
-from prometheus_client import start_http_server, Counter, Histogram, Gauge
+from prometheus_client import start_http_server, Counter, Histogram, Gauge, REGISTRY
 from kubernetes import client, config
 
-#
+# -------------------------------------------------
 # 1. LOGTAIL (BETTER STACK) SETUP WITH ENV VARIABLES
-#
+# -------------------------------------------------
 old_host = os.environ.get("LOGTAIL_OLD_HOST")
 new_host = os.environ.get("LOGTAIL_NEW_HOST")
 
 old_source_token = os.environ.get("LOGTAIL_SOURCE_TOKEN")
 if not old_source_token:
-    raise ValueError(
-        "LOGTAIL_SOURCE_TOKEN env var not found! "
-        "Set it via `heroku config:set LOGTAIL_SOURCE_TOKEN=xxxx`"
-    )
-
+    raise ValueError("LOGTAIL_SOURCE_TOKEN env var not found!")
 new_source_token = os.environ.get("SECOND_LOGTAIL_SOURCE_TOKEN")
 if not new_source_token:
-    raise ValueError(
-        "SECOND_LOGTAIL_SOURCE_TOKEN env var not found! "
-        "Set it via `heroku config:set SECOND_LOGTAIL_SOURCE_TOKEN=xxxx`"
-    )
+    raise ValueError("SECOND_LOGTAIL_SOURCE_TOKEN env var not found!")
 
 old_handler = LogtailHandler(source_token=old_source_token, host=old_host)
 new_handler = LogtailHandler(source_token=new_source_token, host=new_host)
@@ -39,9 +33,9 @@ logger.handlers = []  # Remove default handlers.
 logger.addHandler(old_handler)
 logger.addHandler(new_handler)
 
-#
+# -------------------------------------------------
 # 2. PROMETHEUS METRICS SETUP
-#
+# -------------------------------------------------
 # Metrics for simulated events.
 EVENT_COUNTER = Counter(
     'generated_events_total', 'Total number of generated events', ['event_name']
@@ -50,24 +44,39 @@ EVENT_PROCESSING_TIME = Histogram(
     'event_processing_seconds', 'Time spent processing events'
 )
 
-# Gauges for real Kubernetes metrics.
+# Example of additional gauges to mimic Node Exporter metrics.
+NODE_CPU_SECONDS_TOTAL = Gauge(
+    'node_cpu_seconds_total', 'Time spent by CPU in various modes', ['cpu', 'mode']
+)
+NODE_MEMORY_MemTotal_bytes = Gauge(
+    'node_memory_MemTotal_bytes', 'Total physical memory in bytes'
+)
+NODE_MEMORY_MemAvailable_bytes = Gauge(
+    'node_memory_MemAvailable_bytes', 'Available memory in bytes'
+)
+NODE_DISK_IO_time_seconds_total = Gauge(
+    'node_disk_io_time_seconds_total', 'Total time spent doing I/Os (in seconds)', ['device']
+)
+NODE_FILESYSTEM_avail_bytes = Gauge(
+    'node_filesystem_avail_bytes', 'Filesystem space available', ['mountpoint', 'fstype']
+)
+
+# Kubernetes metrics gauges.
 POD_COUNT_GAUGE = Gauge('k8s_pod_count', 'Number of pods running in the cluster')
 NODE_COUNT_GAUGE = Gauge('k8s_node_count', 'Number of nodes in the cluster')
 
-# Heroku assigns a dynamic port via the PORT env var.
+# Bind to the port provided by Heroku.
 port = int(os.environ.get("PORT", 8000))
 start_http_server(port)
 logging.info(f"Prometheus metrics HTTP server started on port {port}")
 
-#
-# 3. KUBERNETES METRICS UPDATER
-#
+# -------------------------------------------------
+# 3. KUBERNETES METRICS UPDATER (if needed)
+# -------------------------------------------------
 def update_k8s_metrics():
     try:
-        # Try loading in-cluster config (if running inside Kubernetes)
         config.load_incluster_config()
     except Exception:
-        # Fallback: load local kubeconfig (for local testing)
         config.load_kube_config()
     v1 = client.CoreV1Api()
     pods = v1.list_pod_for_all_namespaces(watch=False)
@@ -79,14 +88,53 @@ def update_k8s_metrics():
 def k8s_metrics_updater():
     while True:
         update_k8s_metrics()
-        time.sleep(60)  # Update every 60 seconds
+        time.sleep(60)  # update every 60 seconds
 
-# Start the Kubernetes metrics updater in a separate daemon thread.
 threading.Thread(target=k8s_metrics_updater, daemon=True).start()
 
-#
-# 4. FAKE DATA SETUP
-#
+# -------------------------------------------------
+# 4. SYSTEM METRICS UPDATER (Node Exporter-like)
+# -------------------------------------------------
+def update_system_metrics():
+    # CPU: psutil.cpu_times(percpu=True) gives per-CPU stats.
+    cpu_times = psutil.cpu_times(percpu=True)
+    for idx, ct in enumerate(cpu_times):
+        # We use common modes: user, system, idle. You can add more if needed.
+        NODE_CPU_SECONDS_TOTAL.labels(cpu=f"cpu{idx}", mode="user").set(ct.user)
+        NODE_CPU_SECONDS_TOTAL.labels(cpu=f"cpu{idx}", mode="system").set(ct.system)
+        NODE_CPU_SECONDS_TOTAL.labels(cpu=f"cpu{idx}", mode="idle").set(ct.idle)
+    
+    # Memory: total and available.
+    vm = psutil.virtual_memory()
+    NODE_MEMORY_MemTotal_bytes.set(vm.total)
+    NODE_MEMORY_MemAvailable_bytes.set(vm.available)
+    
+    # Disk I/O: Using psutil.disk_io_counters(perdisk=True)
+    disk_io = psutil.disk_io_counters(perdisk=True)
+    for device, io in disk_io.items():
+        # For example, we record total I/O time (if available).
+        NODE_DISK_IO_time_seconds_total.labels(device=device).set(io.read_time / 1000.0)  # converting ms to s
+    
+    # Filesystem: psutil.disk_partitions() + usage.
+    partitions = psutil.disk_partitions()
+    for part in partitions:
+        try:
+            usage = psutil.disk_usage(part.mountpoint)
+            NODE_FILESYSTEM_avail_bytes.labels(mountpoint=part.mountpoint, fstype=part.fstype).set(usage.free)
+        except Exception:
+            # Some partitions might not be accessible
+            continue
+
+def system_metrics_updater():
+    while True:
+        update_system_metrics()
+        time.sleep(15)  # update system metrics every 15 seconds
+
+threading.Thread(target=system_metrics_updater, daemon=True).start()
+
+# -------------------------------------------------
+# 5. FAKE DATA SETUP (Simulated Logs)
+# -------------------------------------------------
 fake = Faker()
 regions = ["us-east-1", "us-west-2", "eu-central-1", "ap-northeast-1"]
 
@@ -153,7 +201,7 @@ REAL_USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; WOW64; rv:55.0) Gecko/20100101 Firefox/55.0",
 ]
 
-BOT_CHANCE = 0.03  # 3% chance for a bot user-agent
+BOT_CHANCE = 0.03
 
 def pick_user_agent():
     return random.choice(BOT_USER_AGENTS) if random.random() < BOT_CHANCE else random.choice(REAL_USER_AGENTS)
@@ -222,7 +270,6 @@ def generate_event():
     extra["org_id"] = org_id
     extra["department"] = dept
 
-    # Add extra storage-specific metrics for certain events.
     if event_name in ["DISK_FAILURE", "FILE_CORRUPTION"]:
         extra["disk_temperature_c"] = random.randint(30, 90)
         extra["io_queue_length"] = random.randint(0, 100)
