@@ -8,11 +8,11 @@ import psutil
 
 from faker import Faker
 from logtail import LogtailHandler
-from prometheus_client import start_http_server, Counter, Histogram, Gauge, REGISTRY
+from prometheus_client import start_http_server, Counter, Histogram, Gauge
 from kubernetes import client, config
 
 # -------------------------------------------------
-# 1. LOGTAIL (BETTER STACK) SETUP WITH ENV VARIABLES
+# 1. LOGTAIL SETUP
 # -------------------------------------------------
 old_host = os.environ.get("LOGTAIL_OLD_HOST")
 new_host = os.environ.get("LOGTAIL_NEW_HOST")
@@ -29,49 +29,58 @@ new_handler = LogtailHandler(source_token=new_source_token, host=new_host)
 
 logger = logging.getLogger("UltraDetailedDataStoragePlus")
 logger.setLevel(logging.INFO)
-logger.handlers = []  # Remove default handlers.
+logger.handlers = []
 logger.addHandler(old_handler)
 logger.addHandler(new_handler)
 
 # -------------------------------------------------
 # 2. PROMETHEUS METRICS SETUP
 # -------------------------------------------------
-# Metrics for simulated events.
-EVENT_COUNTER = Counter(
-    'generated_events_total', 'Total number of generated events', ['event_name']
-)
-EVENT_PROCESSING_TIME = Histogram(
-    'event_processing_seconds', 'Time spent processing events'
-)
+# Simulated event metrics
+EVENT_COUNTER = Counter('generated_events_total', 'Total number of generated events', ['event_name'])
+EVENT_PROCESSING_TIME = Histogram('event_processing_seconds', 'Time spent processing events')
 
-# Example of additional gauges to mimic Node Exporter metrics.
-NODE_CPU_SECONDS_TOTAL = Gauge(
-    'node_cpu_seconds_total', 'Time spent by CPU in various modes', ['cpu', 'mode']
-)
-NODE_MEMORY_MemTotal_bytes = Gauge(
-    'node_memory_MemTotal_bytes', 'Total physical memory in bytes'
-)
-NODE_MEMORY_MemAvailable_bytes = Gauge(
-    'node_memory_MemAvailable_bytes', 'Available memory in bytes'
-)
-NODE_DISK_IO_time_seconds_total = Gauge(
-    'node_disk_io_time_seconds_total', 'Total time spent doing I/Os (in seconds)', ['device']
-)
-NODE_FILESYSTEM_avail_bytes = Gauge(
-    'node_filesystem_avail_bytes', 'Filesystem space available', ['mountpoint', 'fstype']
-)
+# System metrics (Node Exporter–like)
+# CPU times per mode
+NODE_CPU_SECONDS_TOTAL = Gauge('node_cpu_seconds_total', 'Time spent by CPU in various modes', ['cpu', 'mode'])
+# Memory
+NODE_MEMORY_MemTotal_bytes = Gauge('node_memory_MemTotal_bytes', 'Total physical memory in bytes')
+NODE_MEMORY_MemAvailable_bytes = Gauge('node_memory_MemAvailable_bytes', 'Available memory in bytes')
+NODE_MEMORY_MemFree_bytes = Gauge('node_memory_MemFree_bytes', 'Free memory in bytes')
+NODE_MEMORY_Cached_bytes = Gauge('node_memory_Cached_bytes', 'Cached memory in bytes')
+# Load averages
+NODE_LOAD1 = Gauge('node_load1', '1m load average')
+NODE_LOAD5 = Gauge('node_load5', '5m load average')
+NODE_LOAD15 = Gauge('node_load15', '15m load average')
+# Processes
+NODE_PROCESSES_THREADS_TOTAL = Gauge('node_processes_threads_total', 'Total number of threads in the system')
+NODE_PROCS_BLOCKED = Gauge('node_procs_blocked', 'Number of blocked processes')  # simulated, often 0
+NODE_PROCESSES_PIDS = Gauge('node_processes_pids', 'Total number of processes')
+# Processes state (vector with state label)
+NODE_PROCESSES_STATE = Gauge('node_processes_state', 'Number of processes per state', ['state'])
+# Disk IO (per device)
+NODE_DISK_READ_BYTES_TOTAL = Gauge('node_disk_read_bytes_total', 'Total disk read bytes', ['device'])
+NODE_DISK_WRITTEN_BYTES_TOTAL = Gauge('node_disk_written_bytes_total', 'Total disk written bytes', ['device'])
+# Network (per interface)
+NODE_NETWORK_RECEIVE_BYTES_TOTAL = Gauge('node_network_receive_bytes_total', 'Total bytes received by network interfaces', ['interface'])
+NODE_NETWORK_TRANSMIT_BYTES_TOTAL = Gauge('node_network_transmit_bytes_total', 'Total bytes transmitted by network interfaces', ['interface'])
+# Filesystem
+NODE_FILESYSTEM_FREE_BYTES = Gauge('node_filesystem_free_bytes', 'Free bytes on filesystem', ['mountpoint', 'fstype'])
+NODE_FILESYSTEM_SIZE_BYTES = Gauge('node_filesystem_size_bytes', 'Total bytes on filesystem', ['mountpoint', 'fstype'])
+# Uptime/boot time
+NODE_BOOT_TIME_SECONDS = Gauge('node_boot_time_seconds', 'System boot time in seconds since epoch')
 
-# Kubernetes metrics gauges.
+# Kubernetes metrics (if available)
 POD_COUNT_GAUGE = Gauge('k8s_pod_count', 'Number of pods running in the cluster')
 NODE_COUNT_GAUGE = Gauge('k8s_node_count', 'Number of nodes in the cluster')
 
-# Bind to the port provided by Heroku.
+# Start the Prometheus HTTP server using the Heroku-assigned port.
 port = int(os.environ.get("PORT", 8000))
 start_http_server(port)
 logging.info(f"Prometheus metrics HTTP server started on port {port}")
 
 # -------------------------------------------------
-# 3. KUBERNETES METRICS UPDATER (if needed)
+# 3. KUBERNETES METRICS UPDATER
 # -------------------------------------------------
 def update_k8s_metrics():
     try:
@@ -88,42 +97,86 @@ def update_k8s_metrics():
 def k8s_metrics_updater():
     while True:
         update_k8s_metrics()
-        time.sleep(60)  # update every 60 seconds
+        time.sleep(60)
 
 threading.Thread(target=k8s_metrics_updater, daemon=True).start()
 
 # -------------------------------------------------
-# 4. SYSTEM METRICS UPDATER (Node Exporter-like)
+# 4. SYSTEM METRICS UPDATER (Node Exporter–like)
 # -------------------------------------------------
 def update_system_metrics():
-    # CPU: psutil.cpu_times(percpu=True) gives per-CPU stats.
+    # CPU metrics
     cpu_times = psutil.cpu_times(percpu=True)
     for idx, ct in enumerate(cpu_times):
-        # We use common modes: user, system, idle. You can add more if needed.
-        NODE_CPU_SECONDS_TOTAL.labels(cpu=f"cpu{idx}", mode="user").set(ct.user)
-        NODE_CPU_SECONDS_TOTAL.labels(cpu=f"cpu{idx}", mode="system").set(ct.system)
-        NODE_CPU_SECONDS_TOTAL.labels(cpu=f"cpu{idx}", mode="idle").set(ct.idle)
+        cpu_label = f"cpu{idx}"
+        NODE_CPU_SECONDS_TOTAL.labels(cpu=cpu_label, mode="user").set(ct.user)
+        NODE_CPU_SECONDS_TOTAL.labels(cpu=cpu_label, mode="system").set(ct.system)
+        NODE_CPU_SECONDS_TOTAL.labels(cpu=cpu_label, mode="idle").set(ct.idle)
+        if hasattr(ct, 'iowait'):
+            NODE_CPU_SECONDS_TOTAL.labels(cpu=cpu_label, mode="iowait").set(ct.iowait)
     
-    # Memory: total and available.
+    # Memory metrics
     vm = psutil.virtual_memory()
     NODE_MEMORY_MemTotal_bytes.set(vm.total)
     NODE_MEMORY_MemAvailable_bytes.set(vm.available)
+    NODE_MEMORY_MemFree_bytes.set(vm.free)
+    # Cached memory might not be available on all systems
+    NODE_MEMORY_Cached_bytes.set(getattr(vm, 'cached', 0))
     
-    # Disk I/O: Using psutil.disk_io_counters(perdisk=True)
+    # Load averages (if available)
+    try:
+        load1, load5, load15 = os.getloadavg()
+        NODE_LOAD1.set(load1)
+        NODE_LOAD5.set(load5)
+        NODE_LOAD15.set(load15)
+    except (AttributeError, OSError):
+        NODE_LOAD1.set(0)
+        NODE_LOAD5.set(0)
+        NODE_LOAD15.set(0)
+    
+    # Processes metrics
+    total_threads = 0
+    processes_by_state = {}
+    pids = psutil.pids()
+    for pid in pids:
+        try:
+            proc = psutil.Process(pid)
+            total_threads += proc.num_threads()
+            state = proc.status()
+            processes_by_state[state] = processes_by_state.get(state, 0) + 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    NODE_PROCESSES_THREADS_TOTAL.set(total_threads)
+    NODE_PROCESSES_PIDS.set(len(pids))
+    # Blocked processes: typically not provided; we simulate as 0.
+    NODE_PROCS_BLOCKED.set(0)
+    # Update processes state gauge vector:
+    for state, count in processes_by_state.items():
+        NODE_PROCESSES_STATE.labels(state=state).set(count)
+    
+    # Disk IO metrics per device
     disk_io = psutil.disk_io_counters(perdisk=True)
     for device, io in disk_io.items():
-        # For example, we record total I/O time (if available).
-        NODE_DISK_IO_time_seconds_total.labels(device=device).set(io.read_time / 1000.0)  # converting ms to s
+        NODE_DISK_READ_BYTES_TOTAL.labels(device=device).set(io.read_bytes)
+        NODE_DISK_WRITTEN_BYTES_TOTAL.labels(device=device).set(io.write_bytes)
     
-    # Filesystem: psutil.disk_partitions() + usage.
-    partitions = psutil.disk_partitions()
-    for part in partitions:
+    # Network metrics per interface
+    net_io = psutil.net_io_counters(pernic=True)
+    for iface, io in net_io.items():
+        NODE_NETWORK_RECEIVE_BYTES_TOTAL.labels(interface=iface).set(io.bytes_recv)
+        NODE_NETWORK_TRANSMIT_BYTES_TOTAL.labels(interface=iface).set(io.bytes_sent)
+    
+    # Filesystem metrics: update for each mounted partition
+    for part in psutil.disk_partitions():
         try:
             usage = psutil.disk_usage(part.mountpoint)
-            NODE_FILESYSTEM_avail_bytes.labels(mountpoint=part.mountpoint, fstype=part.fstype).set(usage.free)
+            NODE_FILESYSTEM_FREE_BYTES.labels(mountpoint=part.mountpoint, fstype=part.fstype).set(usage.free)
+            NODE_FILESYSTEM_SIZE_BYTES.labels(mountpoint=part.mountpoint, fstype=part.fstype).set(usage.total)
         except Exception:
-            # Some partitions might not be accessible
             continue
+    
+    # Uptime metric: system boot time
+    NODE_BOOT_TIME_SECONDS.set(psutil.boot_time())
 
 def system_metrics_updater():
     while True:
@@ -133,7 +186,7 @@ def system_metrics_updater():
 threading.Thread(target=system_metrics_updater, daemon=True).start()
 
 # -------------------------------------------------
-# 5. FAKE DATA SETUP (Simulated Logs)
+# 5. FAKE EVENT SIMULATION (existing code)
 # -------------------------------------------------
 fake = Faker()
 regions = ["us-east-1", "us-west-2", "eu-central-1", "ap-northeast-1"]
@@ -340,10 +393,7 @@ def generate_event():
         extra["error"] = "Simulated replication failure"
     elif event_name == "ALERT_CAPACITY":
         usage_gb = volume["capacity_gb"] + random.randint(100, 300)
-        message = (
-            f"Capacity ALERT: volume {volume['id']} usage={usage_gb}GB / "
-            f"capacity={volume['capacity_gb']}GB!"
-        )
+        message = f"Capacity ALERT: volume {volume['id']} usage={usage_gb}GB / capacity={volume['capacity_gb']}GB!"
         extra["usage_gb"] = usage_gb
     elif event_name == "ALERT_PERFORMANCE":
         iops = random.randint(10000, 50000)
