@@ -8,22 +8,37 @@ from faker import Faker
 from logtail import LogtailHandler
 
 #
-# 1. LOGTAIL (BETTER STACK) SETUP
+# 1. LOGTAIL (BETTER STACK) SETUP WITH ENV VARIABLES
 #
-source_token = os.environ.get("LOGTAIL_SOURCE_TOKEN")
-if not source_token:
+# Retrieve endpoint URLs from environment variables.
+old_host = os.environ.get("LOGTAIL_OLD_HOST")
+new_host = os.environ.get("LOGTAIL_NEW_HOST")
+
+# Retrieve source tokens for each endpoint.
+old_source_token = os.environ.get("LOGTAIL_SOURCE_TOKEN")
+if not old_source_token:
     raise ValueError(
         "LOGTAIL_SOURCE_TOKEN env var not found! "
         "Set it via `heroku config:set LOGTAIL_SOURCE_TOKEN=xxxx`"
     )
 
-logtail_handler = LogtailHandler(source_token=source_token)
+new_source_token = os.environ.get("SECOND_LOGTAIL_SOURCE_TOKEN")
+if not new_source_token:
+    raise ValueError(
+        "SECOND_LOGTAIL_SOURCE_TOKEN env var not found! "
+        "Set it via `heroku config:set SECOND_LOGTAIL_SOURCE_TOKEN=xxxx`"
+    )
+
+# Create two Logtail handlers with separate endpoints.
+old_handler = LogtailHandler(source_token=old_source_token, host=old_host)
+new_handler = LogtailHandler(source_token=new_source_token, host=new_host)
+
+# Set up the logger and attach both handlers.
 logger = logging.getLogger("UltraDetailedDataStoragePlus")
 logger.setLevel(logging.INFO)
-
-# Remove any default console handlers so we only log to Better Stack
-logger.handlers = []
-logger.addHandler(logtail_handler)
+logger.handlers = []  # Remove default handlers.
+logger.addHandler(old_handler)
+logger.addHandler(new_handler)
 
 #
 # 2. FAKE DATA SETUP
@@ -56,6 +71,7 @@ EVENTS = [
     ("NODE_JOINED", logging.INFO, 0.05),
     ("NODE_LEFT", logging.WARNING, 0.02),
     ("NODE_OFFLINE", logging.ERROR, 0.03),
+    ("NODE_REBOOT", logging.WARNING, 0.01),
     ("VOLUME_CREATED", logging.INFO, 0.07),
     ("VOLUME_EXPANDED", logging.INFO, 0.05),
     ("VOLUME_DELETED", logging.WARNING, 0.03),
@@ -69,11 +85,15 @@ EVENTS = [
     ("DATA_REPLICATION_FAILED", logging.ERROR, 0.02),
     ("ALERT_CAPACITY", logging.ERROR, 0.02),
     ("ALERT_PERFORMANCE", logging.WARNING, 0.02),
+    ("IO_TIMEOUT", logging.ERROR, 0.01),
+    ("CACHE_MISS", logging.INFO, 0.05),
+    ("DISK_FAILURE", logging.CRITICAL, 0.005),
+    ("FILE_CORRUPTION", logging.CRITICAL, 0.005),
     ("MAINTENANCE_MODE_ENABLED", logging.WARNING, 0.01),
     ("MAINTENANCE_MODE_DISABLED", logging.INFO, 0.01),
 ]
 
-# We'll define some device types and OS versions to add realism
+# Device types, OS versions, and user agents.
 DEVICE_TYPES = ["desktop", "mobile", "tablet", "server"]
 OPERATING_SYSTEMS = [
     "Windows 10",
@@ -85,8 +105,6 @@ OPERATING_SYSTEMS = [
     "iOS 16",
     "Red Hat Enterprise Linux 8",
 ]
-
-# A small user-agent pool
 BOT_USER_AGENTS = [
     "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
     "Mozilla/5.0 (compatible; Bingbot/2.0; +http://www.bing.com/bingbot.htm)",
@@ -103,10 +121,9 @@ REAL_USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; WOW64; rv:55.0) Gecko/20100101 Firefox/55.0",
 ]
 
-BOT_CHANCE = 0.03  # 3% chance it's a bot UA vs. real
+BOT_CHANCE = 0.03  # 3% chance for a bot user-agent
 
 def pick_user_agent():
-    """Pick a user-agent from a small curated pool, with some chance of being a bot."""
     return random.choice(BOT_USER_AGENTS) if random.random() < BOT_CHANCE else random.choice(REAL_USER_AGENTS)
 
 def pick_device_type():
@@ -116,7 +133,6 @@ def pick_os_version():
     return random.choice(OPERATING_SYSTEMS)
 
 def weighted_choice(events):
-    """Choose an event from EVENTS based on the 'weight' field."""
     total_weight = sum(e[2] for e in events)
     r = random.random() * total_weight
     cumulative = 0.0
@@ -124,49 +140,30 @@ def weighted_choice(events):
         cumulative += weight
         if r < cumulative:
             return name, lvl
-    # fallback
     return ("DATA_WRITE", logging.INFO)
 
 PRIORITIES = ["P0", "P1", "P2", "P3"]
 ALL_TAGS = ["production", "infra", "beta", "urgent", "devops", "high-traffic", "critical"]
 
 def generate_event():
-    """
-    Generates a single log event with a scenario-based message + extra data.
-    Returns (log_level, message, extra).
-    """
     event_name, level = weighted_choice(EVENTS)
-
-    # Pick a random node & volume
     node = random.choice(nodes)
     volume = random.choice(volumes)
-
-    # Potential user or system
     user = fake.user_name()
     process_id = random.randint(100, 9999)
-
-    # Random device + OS
     device_type = pick_device_type()
     os_version = pick_os_version()
     user_agent = pick_user_agent()
-    # Possibly generate a random IP for the user or system call
     random_user_ip = fake.ipv4_private()
-
-    # Generate a request/correlation ID
     correlation_id = str(uuid.uuid4())
-
-    # Random system stats
-    cpu_usage = random.randint(1, 99)  # 1-99%
-    memory_free_mb = random.randint(100, 32000)  # up to 32GB free
-
-    # Priority and tags
+    cpu_usage = random.randint(1, 99)
+    memory_free_mb = random.randint(100, 32000)
     priority = random.choice(PRIORITIES)
-    num_tags = random.randint(0, 2)  # 0..2 tags
+    num_tags = random.randint(0, 2)
     chosen_tags = random.sample(ALL_TAGS, k=num_tags)
-
-    # A "phase" or sub-step
     phase = random.choice(["init", "processing", "finalizing", "cleanup", "verifying"])
 
+    # Base extra metadata for all events.
     extra = {
         "event": event_name,
         "cluster": node["cluster"],
@@ -189,11 +186,15 @@ def generate_event():
         "phase": phase,
     }
 
-    # Possibly define an org or department
     org_id = random.randint(1, 20)
     dept = random.choice(["sales", "engineering", "it", "devops", "finance"])
     extra["org_id"] = org_id
     extra["department"] = dept
+
+    # Introduce additional storage-specific metrics in some events.
+    if event_name in ["DISK_FAILURE", "FILE_CORRUPTION"]:
+        extra["disk_temperature_c"] = random.randint(30, 90)
+        extra["io_queue_length"] = random.randint(0, 100)
 
     if event_name == "NODE_JOINED":
         message = f"Node {node['id']} joined cluster {node['cluster']} in region {node['region']}"
@@ -202,6 +203,9 @@ def generate_event():
     elif event_name == "NODE_OFFLINE":
         message = f"Node {node['id']} is OFFLINE, IP={node['ip']}, cluster={node['cluster']}!"
         extra["reason"] = "Connectivity Lost"
+    elif event_name == "NODE_REBOOT":
+        message = f"Node {node['id']} is rebooting for scheduled maintenance"
+        extra["reboot_reason"] = random.choice(["hardware upgrade", "software update", "unexpected error"])
     elif event_name == "VOLUME_CREATED":
         new_size = random.randint(100, 3000)
         message = f"Volume {volume['id']} CREATED with {new_size}GB"
@@ -211,7 +215,7 @@ def generate_event():
         old_size = volume["capacity_gb"]
         add_size = random.randint(100, 500)
         new_size = old_size + add_size
-        volume["capacity_gb"] = new_size  # update the volume capacity
+        volume["capacity_gb"] = new_size
         message = f"Volume {volume['id']} expanded from {old_size}GB to {new_size}GB"
         extra["old_size_gb"] = old_size
         extra["new_size_gb"] = new_size
@@ -238,20 +242,18 @@ def generate_event():
         extra["backup_user"] = user
     elif event_name == "DATA_READ":
         size_mb = random.randint(1, 500)
-        read_latency = random.randint(1, 400)  # up to 400 ms
+        read_latency = random.randint(1, 400)
         message = f"Data read {size_mb}MB from volume {volume['id']} by user {user}"
         extra["read_mb"] = size_mb
-        extra["user"] = user
         extra["latency_ms"] = read_latency
     elif event_name == "DATA_WRITE":
         size_mb = random.randint(1, 2000)
-        write_latency = random.randint(10, 2000)  # up to 2 seconds
+        write_latency = random.randint(10, 2000)
         message = f"Data write {size_mb}MB to volume {volume['id']} by user {user}"
         extra["written_mb"] = size_mb
-        extra["user"] = user
         extra["latency_ms"] = write_latency
     elif event_name == "DATA_REPLICATION":
-        throughput = random.uniform(0.1, 10.0)  # MB/s
+        throughput = random.uniform(0.1, 10.0)
         message = f"Data replication started on node {node['id']} for volume {volume['id']}"
         extra["replication_initiator"] = user
         extra["throughput_mb_s"] = round(throughput, 2)
@@ -269,6 +271,22 @@ def generate_event():
         iops = random.randint(10000, 50000)
         message = f"Performance ALERT: node {node['id']} iops={iops}!"
         extra["iops"] = iops
+    elif event_name == "IO_TIMEOUT":
+        timeout_duration = random.randint(100, 2000)  # in milliseconds
+        message = f"I/O timeout on node {node['id']} for volume {volume['id']} (timeout: {timeout_duration}ms)"
+        extra["timeout_duration_ms"] = timeout_duration
+    elif event_name == "CACHE_MISS":
+        message = f"Cache miss for volume {volume['id']}, falling back to disk read"
+        extra["cache_hit_ratio"] = round(random.uniform(0.7, 0.99), 2)
+    elif event_name == "DISK_FAILURE":
+        disk_id = f"disk-{random.randint(1,8)}"
+        message = f"Critical: Disk failure detected on node {node['id']} (disk {disk_id})"
+        extra["disk_id"] = disk_id
+        extra["error_code"] = random.choice(["E101", "E202", "E303"])
+    elif event_name == "FILE_CORRUPTION":
+        message = f"Critical: File corruption detected in volume {volume['id']} on node {node['id']}"
+        extra["corruption_level"] = random.choice(["minor", "severe"])
+        extra["error_checksum"] = hex(random.randint(0, 0xFFFFFF))[2:]
     elif event_name == "MAINTENANCE_MODE_ENABLED":
         message = f"MAINTENANCE MODE ENABLED on cluster {node['cluster']}"
         extra["enabled_by"] = user
@@ -281,20 +299,11 @@ def generate_event():
 
     return level, message, extra
 
-
 def main():
-    """
-    Infinite loop generating highly detailed, scenario-based logs,
-    all sent to Better Stack's Logtail (no console output).
-    """
     logger.info("Starting Ultra-Detailed Data Storage Simulation with Extra Metadata...")
-
     while True:
-        # 1) Generate the scenario event
         level, message, extra = generate_event()
         logger.log(level, message, extra=extra)
-
-        # 2) Sleep a random amount of time (10–65 ms) for variable frequency
         sleep_ms = random.randint(10, 65)
         time.sleep(sleep_ms / 1000.0)
 
