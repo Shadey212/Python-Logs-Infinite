@@ -3,18 +3,19 @@ import time
 import random
 import logging
 import uuid
+import threading
 
 from faker import Faker
 from logtail import LogtailHandler
+from prometheus_client import start_http_server, Counter, Histogram, Gauge
+from kubernetes import client, config
 
 #
 # 1. LOGTAIL (BETTER STACK) SETUP WITH ENV VARIABLES
 #
-# Retrieve endpoint URLs from environment variables.
 old_host = os.environ.get("LOGTAIL_OLD_HOST")
 new_host = os.environ.get("LOGTAIL_NEW_HOST")
 
-# Retrieve source tokens for each endpoint.
 old_source_token = os.environ.get("LOGTAIL_SOURCE_TOKEN")
 if not old_source_token:
     raise ValueError(
@@ -29,11 +30,9 @@ if not new_source_token:
         "Set it via `heroku config:set SECOND_LOGTAIL_SOURCE_TOKEN=xxxx`"
     )
 
-# Create two Logtail handlers with separate endpoints.
 old_handler = LogtailHandler(source_token=old_source_token, host=old_host)
 new_handler = LogtailHandler(source_token=new_source_token, host=new_host)
 
-# Set up the logger and attach both handlers.
 logger = logging.getLogger("UltraDetailedDataStoragePlus")
 logger.setLevel(logging.INFO)
 logger.handlers = []  # Remove default handlers.
@@ -41,14 +40,56 @@ logger.addHandler(old_handler)
 logger.addHandler(new_handler)
 
 #
-# 2. FAKE DATA SETUP
+# 2. PROMETHEUS METRICS SETUP
+#
+# Metrics for simulated events.
+EVENT_COUNTER = Counter(
+    'generated_events_total', 'Total number of generated events', ['event_name']
+)
+EVENT_PROCESSING_TIME = Histogram(
+    'event_processing_seconds', 'Time spent processing events'
+)
+
+# Gauges for real Kubernetes metrics.
+POD_COUNT_GAUGE = Gauge('k8s_pod_count', 'Number of pods running in the cluster')
+NODE_COUNT_GAUGE = Gauge('k8s_node_count', 'Number of nodes in the cluster')
+
+# Heroku assigns a dynamic port via the PORT env var.
+port = int(os.environ.get("PORT", 8000))
+start_http_server(port)
+logging.info(f"Prometheus metrics HTTP server started on port {port}")
+
+#
+# 3. KUBERNETES METRICS UPDATER
+#
+def update_k8s_metrics():
+    try:
+        # Try loading in-cluster config (if running inside Kubernetes)
+        config.load_incluster_config()
+    except Exception:
+        # Fallback: load local kubeconfig (for local testing)
+        config.load_kube_config()
+    v1 = client.CoreV1Api()
+    pods = v1.list_pod_for_all_namespaces(watch=False)
+    nodes = v1.list_node(watch=False)
+    POD_COUNT_GAUGE.set(len(pods.items))
+    NODE_COUNT_GAUGE.set(len(nodes.items))
+    logging.info("Updated Kubernetes metrics: %d pods, %d nodes", len(pods.items), len(nodes.items))
+
+def k8s_metrics_updater():
+    while True:
+        update_k8s_metrics()
+        time.sleep(60)  # Update every 60 seconds
+
+# Start the Kubernetes metrics updater in a separate daemon thread.
+threading.Thread(target=k8s_metrics_updater, daemon=True).start()
+
+#
+# 4. FAKE DATA SETUP
 #
 fake = Faker()
-
-# Example "data centers" or "regions"
 regions = ["us-east-1", "us-west-2", "eu-central-1", "ap-northeast-1"]
 
-# Some nodes in various clusters
 nodes = [
     {"id": "node1", "cluster": "clusterA", "ip": "10.0.0.1", "region": "us-east-1"},
     {"id": "node2", "cluster": "clusterA", "ip": "10.0.0.2", "region": "us-east-1"},
@@ -57,7 +98,6 @@ nodes = [
     {"id": "node5", "cluster": "clusterC", "ip": "10.2.0.1", "region": "eu-central-1"},
 ]
 
-# Volumes with capacity, cluster ownership, etc.
 volumes = [
     {"id": "vol-100", "cluster": "clusterA", "capacity_gb": 500},
     {"id": "vol-101", "cluster": "clusterA", "capacity_gb": 1000},
@@ -66,7 +106,6 @@ volumes = [
     {"id": "vol-300", "cluster": "clusterC", "capacity_gb": 2000},
 ]
 
-# Weighted event definitions: (EVENT_NAME, LOG_LEVEL, WEIGHT)
 EVENTS = [
     ("NODE_JOINED", logging.INFO, 0.05),
     ("NODE_LEFT", logging.WARNING, 0.02),
@@ -93,17 +132,10 @@ EVENTS = [
     ("MAINTENANCE_MODE_DISABLED", logging.INFO, 0.01),
 ]
 
-# Device types, OS versions, and user agents.
 DEVICE_TYPES = ["desktop", "mobile", "tablet", "server"]
 OPERATING_SYSTEMS = [
-    "Windows 10",
-    "Windows Server 2022",
-    "macOS 13.0",
-    "Ubuntu 22.04",
-    "CentOS 7",
-    "Android 13",
-    "iOS 16",
-    "Red Hat Enterprise Linux 8",
+    "Windows 10", "Windows Server 2022", "macOS 13.0", "Ubuntu 22.04",
+    "CentOS 7", "Android 13", "iOS 16", "Red Hat Enterprise Linux 8",
 ]
 BOT_USER_AGENTS = [
     "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
@@ -163,7 +195,6 @@ def generate_event():
     chosen_tags = random.sample(ALL_TAGS, k=num_tags)
     phase = random.choice(["init", "processing", "finalizing", "cleanup", "verifying"])
 
-    # Base extra metadata for all events.
     extra = {
         "event": event_name,
         "cluster": node["cluster"],
@@ -191,7 +222,7 @@ def generate_event():
     extra["org_id"] = org_id
     extra["department"] = dept
 
-    # Introduce additional storage-specific metrics in some events.
+    # Add extra storage-specific metrics for certain events.
     if event_name in ["DISK_FAILURE", "FILE_CORRUPTION"]:
         extra["disk_temperature_c"] = random.randint(30, 90)
         extra["io_queue_length"] = random.randint(0, 100)
@@ -272,7 +303,7 @@ def generate_event():
         message = f"Performance ALERT: node {node['id']} iops={iops}!"
         extra["iops"] = iops
     elif event_name == "IO_TIMEOUT":
-        timeout_duration = random.randint(100, 2000)  # in milliseconds
+        timeout_duration = random.randint(100, 2000)
         message = f"I/O timeout on node {node['id']} for volume {volume['id']} (timeout: {timeout_duration}ms)"
         extra["timeout_duration_ms"] = timeout_duration
     elif event_name == "CACHE_MISS":
@@ -302,7 +333,9 @@ def generate_event():
 def main():
     logger.info("Starting Ultra-Detailed Data Storage Simulation with Extra Metadata...")
     while True:
-        level, message, extra = generate_event()
+        with EVENT_PROCESSING_TIME.time():
+            level, message, extra = generate_event()
+        EVENT_COUNTER.labels(event_name=extra.get("event", "unknown")).inc()
         logger.log(level, message, extra=extra)
         sleep_ms = random.randint(10, 65)
         time.sleep(sleep_ms / 1000.0)
